@@ -18,6 +18,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     PlayerFeature,
@@ -46,9 +47,10 @@ if TYPE_CHECKING:
 
 
 PLAYER_FEATURES_BASE = {
-    PlayerFeature.SYNC,
+    PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
+    PlayerFeature.SYNC,
 }
 
 PLAYBACK_STATE_MAP = {
@@ -155,6 +157,8 @@ class BluesoundPlayer:
         self.mass_player.elapsed_time = self.status.seconds
         self.mass_player.elapsed_time_last_updated = time.time()
 
+        self.logger.debug("Supported features: %s", self.mass_player.supported_features)
+
         if not self.mass_player:
             return
         if self.sync_status.volume == -1:
@@ -162,6 +166,14 @@ class BluesoundPlayer:
         else:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
+
+        self.mass_player.can_sync_with = tuple(
+            x
+            for x in self.prov.bluos_players
+            if x != self.player_id and x in self.prov.bluos_players
+        )
+
+        self.logger.debug("Can sync with %s", self.mass_player.can_sync_with)
 
         self.logger.log(
             VERBOSE_LOG_LEVEL,
@@ -301,11 +313,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 address=cur_address,
             ),
             # Set the supported features for this player
-            supported_features=(
-                PlayerFeature.VOLUME_SET,
-                PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.PAUSE,
-            ),
+            supported_features=tuple(PLAYER_FEATURES_BASE),
             needs_poll=True,
             poll_interval=30,
         )
@@ -326,6 +334,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             return (*base_entries, CONF_ENTRY_CROSSFADE)
         return (
             *base_entries,
+            create_sample_rates_config_entry(192000, 24, 192000, 24, False),
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_ENFORCE_MP3,
@@ -410,6 +419,8 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for BluOS player."""
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.add_slave(target_player.ip_address, target_player.port)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for BluOS player."""
