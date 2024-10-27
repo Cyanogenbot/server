@@ -129,7 +129,7 @@ class CacheController(CoreController):
         return default
 
     async def set(
-        self, key, data, checksum="", expiration=(86400 * 30), category: int = 0, base_key: str = ""
+        self, key, data, checksum="", expiration=(86400 * 7), category: int = 0, base_key: str = ""
     ) -> None:
         """Set data in cache."""
         if not key:
@@ -139,7 +139,7 @@ class CacheController(CoreController):
         expires = int(time.time() + expiration)
         memory_key = f"{category}/{base_key}/{key}"
         self._mem_cache[memory_key] = (data, checksum, expires)
-        if (expires - time.time()) < 3600 * 4:
+        if (expires - time.time()) < 3600 * 12:
             # do not cache items in db with short expiration
             return
         data = await asyncio.to_thread(json_dumps, data)
@@ -190,7 +190,6 @@ class CacheController(CoreController):
             query_parts.append(f"sub_key LIKE '%{key_filter}%'")
         query = "WHERE " + " AND ".join(query_parts) if query_parts else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
-        await self.database.vacuum()
         self.logger.info("Clearing database DONE")
 
     async def auto_cleanup(self) -> None:
@@ -206,10 +205,6 @@ class CacheController(CoreController):
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
-        if cleaned_records > 50:
-            self.logger.debug("Compacting database...")
-            await self.database.vacuum()
-            self.logger.debug("Compacting database done")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     async def _setup_database(self) -> None:
@@ -248,7 +243,7 @@ class CacheController(CoreController):
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         await self.__create_database_indexes()
-        # compact db
+        # compact db (vacuum) at startup
         self.logger.debug("Compacting database...")
         try:
             await self.database.vacuum()

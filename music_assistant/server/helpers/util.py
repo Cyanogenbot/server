@@ -19,6 +19,7 @@ from importlib.metadata import version as pkg_version
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 
+import cchardet as chardet
 import ifaddr
 import memory_tempfile
 from zeroconf import IPVersion
@@ -143,6 +144,7 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
 def create_tempfile():
     """Return a (named) temporary file."""
+    # ruff: noqa: SIM115
     if platform.system() == "Linux":
         return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
     return tempfile.NamedTemporaryFile(buffering=0)
@@ -179,6 +181,17 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
     with suppress(asyncio.CancelledError):
         await task
     await agen.aclose()
+
+
+async def detect_charset(data: bytes, fallback="utf-8") -> str:
+    """Detect charset of raw data."""
+    try:
+        detected = await asyncio.to_thread(chardet.detect, data)
+        if detected and detected["encoding"] and detected["confidence"] > 0.75:
+            return detected["encoding"]
+    except Exception as err:
+        LOGGER.debug("Failed to detect charset: %s", err)
+    return fallback
 
 
 class TaskManager:
@@ -249,3 +262,36 @@ def lock(
             return await func(*args, **kwargs)
 
     return wrapper
+
+
+class TimedAsyncGenerator:
+    """
+    Async iterable that times out after a given time.
+
+    Source: https://medium.com/@dmitry8912/implementing-timeouts-in-pythons-asynchronous-generators-f7cbaa6dc1e9
+    """
+
+    def __init__(self, iterable, timeout=0):
+        """
+        Initialize the AsyncTimedIterable.
+
+        Args:
+            iterable: The async iterable to wrap.
+            timeout: The timeout in seconds for each iteration.
+        """
+
+        class AsyncTimedIterator:
+            def __init__(self):
+                self._iterator = iterable.__aiter__()
+
+            async def __anext__(self):
+                result = await asyncio.wait_for(self._iterator.__anext__(), int(timeout))
+                if not result:
+                    raise StopAsyncIteration
+                return result
+
+        self._factory = AsyncTimedIterator
+
+    def __aiter__(self):
+        """Return the async iterator."""
+        return self._factory()

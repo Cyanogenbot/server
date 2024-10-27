@@ -258,14 +258,12 @@ class PlayerType(StrEnum):
 
     player: A regular player.
     stereo_pair: Same as player but a dedicated stereo pair of 2 speakers.
-    group: A (dedicated) group player or (universal) playergroup.
-    sync_group: A group/preset of players that can be synced together.
+    group: A (dedicated) (sync)group player or (universal) playergroup.
     """
 
     PLAYER = "player"
     STEREO_PAIR = "stereo_pair"
     GROUP = "group"
-    SYNC_GROUP = "sync_group"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -283,7 +281,7 @@ class PlayerFeature(StrEnum):
     sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
     seek: The player supports seeking to a specific.
-    queue: The player supports (en)queuing of media items natively.
+    enqueue: The player supports (en)queuing of media items natively.
     """
 
     POWER = "power"
@@ -292,7 +290,9 @@ class PlayerFeature(StrEnum):
     PAUSE = "pause"
     SYNC = "sync"
     SEEK = "seek"
+    NEXT_PREVIOUS = "next_previous"
     PLAY_ANNOUNCEMENT = "play_announcement"
+    ENQUEUE = "enqueue"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -312,6 +312,7 @@ class EventType(StrEnum):
     QUEUE_UPDATED = "queue_updated"
     QUEUE_ITEMS_UPDATED = "queue_items_updated"
     QUEUE_TIME_UPDATED = "queue_time_updated"
+    MEDIA_ITEM_PLAYED = "media_item_played"
     SHUTDOWN = "application_shutdown"
     MEDIA_ITEM_ADDED = "media_item_added"
     MEDIA_ITEM_UPDATED = "media_item_updated"
@@ -370,6 +371,7 @@ class ProviderFeature(StrEnum):
     # PLAYERPROVIDER FEATURES
     #
     SYNC_PLAYERS = "sync_players"
+    REMOVE_PLAYER = "remove_player"
 
     #
     # METADATAPROVIDER FEATURES

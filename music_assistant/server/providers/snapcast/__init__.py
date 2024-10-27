@@ -53,20 +53,33 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-    from music_assistant.server.providers.ugp import UniversalGroupProvider
+    from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
+CONF_SERVER_CHUNK_MS = "snapcast_server_built_in_chunk_ms"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
+CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
+
+
+CONF_CATEGORY_GENERIC = "generic"
+CONF_CATEGORY_ADVANCED = "advanced"
+CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
+
+CONF_HELP_LINK = (
+    "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
+)
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
+DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
+DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
 SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 
@@ -119,16 +132,24 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
             type=ConfigEntryType.INTEGER,
-            range=(500, 6000),
+            range=(200, 6000),
             default_value=1000,
             label="Snapserver buffer size",
-            description="Buffer[ms]. The end-to-end latency, "
-            "from capturing a sample on the snapserver until "
-            "the sample is played-out on the client ",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_CHUNK_MS,
+            type=ConfigEntryType.INTEGER,
+            range=(10, 100),
+            default_value=26,
+            label="Snapserver chunk size",
+            required=False,
+            category=CONF_CATEGORY_BUILT_IN,
+            hidden=not local_snapserver_present,
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_INITIAL_VOLUME,
@@ -136,11 +157,10 @@ async def get_config_entries(
             range=(0, 100),
             default_value=25,
             label="Snapserver initial volume",
-            description="Volume assigned to new snapclients [percent]",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
@@ -148,9 +168,9 @@ async def get_config_entries(
             default_value=False,
             label="Send audio to muted clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_TRANSPORT_CODEC,
@@ -175,11 +195,10 @@ async def get_config_entries(
             ),
             default_value="flac",
             label="Snapserver default transport codec",
-            description="This is the codec used by snapserver to send audio to clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
@@ -187,19 +206,20 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            description="Music Assistant by default already includes a Snapserver. \n\n"
-            "Checking this option allows you to connect to your own/external existing Snapserver "
-            "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if local_snapserver_present else "generic",
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
             type=ConfigEntryType.STRING,
-            default_value="127.0.0.1",
+            default_value=DEFAULT_SNAPSERVER_IP,
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -208,7 +228,17 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
+        ),
+        ConfigEntry(
+            key=CONF_STREAM_IDLE_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
+            label="Snapcast idle threshold stream parameter",
+            required=True,
+            category=CONF_CATEGORY_ADVANCED,
         ),
     )
 
@@ -242,16 +272,6 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _can_sync_with(self, player_id: str) -> None:
-        mass_player = self.mass.players.get(player_id)
-        mass_player.can_sync_with = tuple(
-            self._get_ma_id(snap_client.identifier)
-            for snap_client in self._snapserver.clients
-            if self._get_ma_id(snap_client.identifier) != player_id
-        )
-
-        self.mass.players.update(mass_player.player_id)
-
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
@@ -266,6 +286,7 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_chunk_ms = self.config.get_value(CONF_SERVER_CHUNK_MS)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
             self._snapcast_server_send_to_muted = self.config.get_value(
                 CONF_SERVER_SEND_AUDIO_TO_MUTED
@@ -277,6 +298,7 @@ class SnapCastProvider(PlayerProvider):
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
+        self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._stream_tasks = {}
         self._ids_map = bidict({})
 
@@ -299,13 +321,14 @@ class SnapCastProvider(PlayerProvider):
             )
             # register callback for when the connection gets lost to the snapserver
             self._snapserver.set_on_disconnect_callback(self._handle_disconnect)
-
+            await self._create_default_stream()
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         # initial load of players
         self._handle_update()
 
@@ -316,14 +339,6 @@ class SnapCastProvider(PlayerProvider):
             await self.cmd_stop(player_id)
         self._snapserver.stop()
         await self._stop_builtin_server()
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
-        super().on_player_config_removed(player_id)
-        if self._use_builtin_server:
-            self.mass.create_task(
-                self._snapserver.delete_client(self._get_snapclient_id(player_id))
-            )
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -365,16 +380,19 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
                 ),
-                can_sync_with=[],
                 group_childs=set(),
                 synced_to=self._synced_to(player_id),
             )
-        self.mass.players.register_or_update(player)
+        asyncio.run_coroutine_threadsafe(
+            self.mass.players.register_or_update(player), loop=self.mass.loop
+        )
 
     def _handle_player_update(self, snap_client: Snapclient) -> None:
         """Process Snapcast update to Player controller."""
         player_id = self._get_ma_id(snap_client.identifier)
         player = self.mass.players.get(player_id)
+        if not player:
+            return
         player.name = snap_client.friendly_name
         player.volume_level = snap_client.volume
         player.volume_muted = snap_client.muted
@@ -388,7 +406,6 @@ class SnapCastProvider(PlayerProvider):
                     player.active_source = stream.name
             else:
                 player.active_source = player_id
-        self._can_sync_with(player_id)
         self._group_childs(player_id)
         self.mass.players.update(player_id)
 
@@ -417,14 +434,19 @@ class SnapCastProvider(PlayerProvider):
                 stream_task.cancel()
         player.state = PlayerState.IDLE
         self._set_childs_state(player_id)
-        self.mass.players.register_or_update(player)
+        self.mass.players.update(player_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
+        ma_player = self.mass.players.get(player_id, raise_unavailable=False)
         snap_client_id = self._get_snapclient_id(player_id)
-        await self._snapserver.client(snap_client_id).set_muted(muted)
+        snapclient = self._snapserver.client(snap_client_id)
+        # Using optimistic value because the library does not return the response from the api
+        await snapclient.set_muted(muted)
+        ma_player.volume_muted = snapclient.muted
+        self.mass.players.update(player_id)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
@@ -445,16 +467,19 @@ class SnapCastProvider(PlayerProvider):
             for mass_child_id in list(mass_player.group_childs):
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
-        else:
-            mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
-            mass_sync_master_player.group_childs.remove(player_id)
-            mass_player.synced_to = None
-            snap_client_id = self._get_snapclient_id(player_id)
-            group = self._get_snapgroup(player_id)
-            await group.remove_client(snap_client_id)
+            return
+        mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
+        mass_sync_master_player.group_childs.remove(player_id)
+        mass_player.synced_to = None
+        snap_client_id = self._get_snapclient_id(player_id)
+        group = self._get_snapgroup(player_id)
+        await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player_id, skip_forward=True)
+        self.mass.players.update(mass_player.synced_to, skip_forward=True)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -482,8 +507,8 @@ class SnapCastProvider(PlayerProvider):
             )
         elif media.queue_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            ugp_stream = ugp_provider.streams[media.queue_id]
+            ugp_provider: PlayerGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.output_format
             audio_source = ugp_stream.subscribe()
         elif media.queue_id and media.queue_item_id:
@@ -534,11 +559,16 @@ class SnapCastProvider(PlayerProvider):
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
             finally:
-                with suppress(TypeError, KeyError, AttributeError):
-                    await self._snapserver.stream_remove_stream(stream.identifier)
+                await self._delete_current_snapstream(stream, media)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+
+    async def _delete_current_snapstream(self, stream: Snapstream, media: PlayerMedia) -> None:
+        with suppress(TypeError, KeyError, AttributeError):
+            if media.duration < 5:
+                await asyncio.sleep(5)
+            await self._snapserver.stream_remove_stream(stream.identifier)
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -588,7 +618,7 @@ class SnapCastProvider(PlayerProvider):
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&idle_threshold={self._snapcast_stream_idle_threshold}",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
@@ -598,6 +628,14 @@ class SnapCastProvider(PlayerProvider):
             return (stream, port)
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
+
+    async def _create_default_stream(self) -> None:
+        """Create new stream on snapcast server named default case not exist."""
+        all_streams = {stream.name for stream in self._snapserver.streams}
+        if "default" not in all_streams:
+            await self._snapserver.stream_add_stream(
+                "pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2"
+            )
 
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
@@ -641,7 +679,8 @@ class SnapCastProvider(PlayerProvider):
                 setattr(self, attr_name, True)
             except NonUniqueNameException:
                 self.logger.debug(
-                    "Could not register mdns record for %s as its already in use", zeroconf_type
+                    "Could not register mdns record for %s as its already in use",
+                    zeroconf_type,
                 )
             except Exception as err:
                 self.logger.exception(
@@ -656,8 +695,9 @@ class SnapCastProvider(PlayerProvider):
             "--http.port=1780",
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
-            "--tcp.port=1705",
-            f"--stream.buffer={self._snapcast_server_control_port}",
+            f"--tcp.port={self._snapcast_server_control_port}",
+            f"--stream.buffer={self._snapcast_server_buffer_size}",
+            f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
@@ -690,7 +730,8 @@ class SnapCastProvider(PlayerProvider):
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
         self.logger.info(
-            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.", str(exc)
+            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.",
+            str(exc),
         )
         # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
+        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)

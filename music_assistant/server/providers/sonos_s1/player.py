@@ -560,7 +560,7 @@ class SonosPlayer:
             self.sync_coordinator = None
             self.group_members = group_members
             self.group_members_ids = group_members_ids
-            self.mass.players.update(self.player_id)
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, self.player_id)
 
             for joined_uid in group[1:]:
                 joined_speaker: SonosPlayer = self.sonos_prov.sonosplayers.get(joined_uid)
@@ -648,11 +648,6 @@ class SonosPlayer:
             self.mass_player.elapsed_time_last_updated = self.position_updated_at.timestamp()
 
         # zone topology (syncing/grouping) details
-        self.mass_player.can_sync_with = tuple(
-            x.player_id
-            for x in self.sonos_prov.sonosplayers.values()
-            if x.player_id != self.player_id
-        )
         if self.sync_coordinator:
             # player is synced to another player
             self.mass_player.synced_to = self.sync_coordinator.player_id

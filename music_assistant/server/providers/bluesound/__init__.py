@@ -28,9 +28,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -231,10 +229,6 @@ class BluesoundPlayer:
             self.mass_player.active_source = self.sync_status.master
 
         self.mass_player.state = PLAYBACK_STATE_MAP[self.status.state]
-        self.mass_player.can_sync_with = (
-            tuple(x for x in self.prov.bluos_players if x != self.player_id),
-        )
-
         self.mass.players.update(self.player_id)
 
 
@@ -287,7 +281,6 @@ class BluesoundPlayerProvider(PlayerProvider):
                 if not mass_player.available:
                     self.logger.debug("Player back online: %s", mass_player.display_name)
                     bluos_player.client.sync()
-                    mass_player.available = True
                 bluos_player.discovery_info = info
                 self.mass.players.update(self.player_id)
                 return
@@ -317,7 +310,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             needs_poll=True,
             poll_interval=30,
         )
-        self.mass.players.register(mass_player)
+        await self.mass.players.register(mass_player)
 
         # TODO sync
         await bluos_player.update_attributes()

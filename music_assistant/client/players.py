@@ -46,6 +46,10 @@ class Players:
         """Return Player by ID (or None if not found)."""
         return self._players.get(player_id)
 
+    def __getitem__(self, player_id: str) -> Player:
+        """Return Player by ID."""
+        return self._players[player_id]
+
     #  Player related endpoints/commands
 
     async def player_command_stop(self, player_id: str) -> None:
@@ -173,10 +177,6 @@ class Players:
         await self.client.send_command(
             "players/cmd/group_volume", player_id=player_id, volume_level=volume_level
         )
-
-    async def set_player_group_power(self, player_id: str, power: bool) -> None:
-        """Handle power command for a (Sync)Group."""
-        await self.client.send_command("players/cmd/group_volume", player_id=player_id, power=power)
 
     async def set_player_group_members(self, player_id: str, members: list[str]) -> None:
         """

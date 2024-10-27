@@ -33,6 +33,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
+from music_assistant.common.models.player_queue import PlayLogEntry
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -58,7 +59,6 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_chunksize,
-    get_hls_radio_stream,
     get_hls_substream,
     get_icy_radio_stream,
     get_media_stream,
@@ -83,10 +83,8 @@ DEFAULT_STREAM_HEADERS = {
     "Server": "Music Assistant",
     "transferMode.dlna.org": "Streaming",
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
-    "Cache-Control": "no-cache,must-revalidate",
+    "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "Accept-Ranges": "none",
-    "Connection": "close",
 }
 ICY_HEADERS = {
     "icy-name": "Music Assistant",
@@ -326,13 +324,10 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
-        http_profile: str = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE
-        )
+
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{output_format.output_format_str}",
             "icy-name": queue_item.name,
         }
         resp = web.StreamResponse(
@@ -340,10 +335,13 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        if http_profile == "forced_content_length":
-            resp.content_length = get_chunksize(
-                output_format, queue_item.streamdetails.duration or 120
-            )
+        resp.content_type = f"audio/{output_format.output_format_str}"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
+        if http_profile == "forced_content_length" and queue_item.duration:
+            # guess content length based on duration
+            resp.content_length = get_chunksize(output_format, queue_item.duration)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
 
@@ -385,6 +383,8 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, queue_player.player_id),
+            # we don't allow the player to buffer too much ahead so we use readrate limiting
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
         ):
             try:
                 await resp.write(chunk)
@@ -398,8 +398,6 @@ class StreamsController(CoreController):
                 queue_item.uri,
                 queue.display_name,
             )
-        if queue.stream_finished is not None:
-            queue.stream_finished = True
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:
@@ -436,17 +434,11 @@ class StreamsController(CoreController):
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
-        http_profile: str = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE
-        )
-        # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "Content-Type": f"audio/{output_format.output_format_str}",
             "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
+            "Content-Type": f"audio/{output_format.output_format_str}",
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -456,10 +448,15 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
         if http_profile == "forced_content_length":
-            resp.content_length = get_chunksize(output_format, 24 * 2600)
+            # just set an insane high content length to make sure the player keeps playing
+            resp.content_length = get_chunksize(output_format, 12 * 3600)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -477,6 +474,8 @@ class StreamsController(CoreController):
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, queue_player.player_id),
             chunk_size=icy_meta_interval if enable_icy else None,
+            # we don't allow the player to buffer too much ahead so we use readrate limiting
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
         ):
             try:
                 await resp.write(chunk)
@@ -535,16 +534,35 @@ class StreamsController(CoreController):
         # work out output format/details
         fmt = request.match_info.get("fmt", announcement_url.rsplit(".")[-1])
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
-        # prepare request, add some DLNA/UPNP compatible headers
-        headers = {
-            **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{audio_format.output_format_str}",
-        }
+
+        http_profile: str = await self.mass.config.get_player_config_value(
+            player_id, CONF_HTTP_PROFILE
+        )
+        if http_profile == "forced_content_length":
+            # given the fact that an announcement is just a short audio clip,
+            # just send it over completely at once so we have a fixed content length
+            data = b""
+            async for chunk in self.get_announcement_stream(
+                announcement_url=announcement_url,
+                output_format=audio_format,
+                use_pre_announce=use_pre_announce,
+            ):
+                data += chunk
+            return web.Response(
+                body=data,
+                content_type=f"audio/{audio_format.output_format_str}",
+                headers=DEFAULT_STREAM_HEADERS,
+            )
+
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=headers,
+            headers=DEFAULT_STREAM_HEADERS,
         )
+        resp.content_type = f"audio/{audio_format.output_format_str}"
+        if http_profile == "chunked":
+            resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -605,10 +623,6 @@ class StreamsController(CoreController):
         queue_track = None
         last_fadeout_part = b""
         queue.flow_mode = True
-        queue.stream_finished = False
-        queue.flow_mode_start_index = self.mass.player_queues.index_by_id(
-            queue.queue_id, start_queue_item.queue_item_id
-        )
         use_crossfade = await self.mass.config.get_player_config_value(
             queue.queue_id, CONF_CROSSFADE
         )
@@ -633,9 +647,7 @@ class StreamsController(CoreController):
                 queue_track = start_queue_item
             else:
                 try:
-                    queue_track = await self.mass.player_queues.preload_next_item(
-                        queue.queue_id, allow_repeat=False
-                    )
+                    queue_track = await self.mass.player_queues.load_next_item(queue.queue_id)
                 except QueueEmpty:
                     break
 
@@ -653,6 +665,9 @@ class StreamsController(CoreController):
             self.mass.player_queues.track_loaded_in_buffer(
                 queue.queue_id, queue_track.queue_item_id
             )
+            # append to play log so the queue controller can work out which track is playing
+            play_log_entry = PlayLogEntry(queue_track.queue_item_id)
+            queue.flow_mode_stream_log.append(play_log_entry)
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
@@ -734,6 +749,8 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration = (
                 queue_track.streamdetails.seek_position + seconds_streamed
             )
+            play_log_entry.seconds_streamed = seconds_streamed
+            play_log_entry.duration = queue_track.streamdetails.duration
             total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
@@ -751,8 +768,6 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
         total_bytes_sent += bytes_written
-        if queue.stream_finished is not None:
-            queue.stream_finished = True
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -837,19 +852,19 @@ class StreamsController(CoreController):
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
         elif streamdetails.stream_type == StreamType.HLS:
+            substream = await get_hls_substream(self.mass, streamdetails.path)
+            audio_source = substream.path
             if streamdetails.media_type == MediaType.RADIO:
                 # Especially the BBC streams struggle when they're played directly
-                # with ffmpeg, so we use our own HLS stream parser/logic
-                audio_source = get_hls_radio_stream(self.mass, streamdetails.path, streamdetails)
-            else:
-                # normal tracks we just let ffmpeg deal with it
-                substream = await get_hls_substream(self.mass, streamdetails.path)
-                audio_source = substream.path
-        elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
-            audio_source = streamdetails.path
-            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
+                # with ffmpeg, where they just stop after some minutes,
+                # so we tell ffmpeg to loop around in this case.
+                extra_input_args += ["-stream_loop", "-1", "-re"]
         else:
             audio_source = streamdetails.path
+
+        # add support for decryption key provided in streamdetails
+        if streamdetails.decryption_key:
+            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
 
         # handle seek support
         if (

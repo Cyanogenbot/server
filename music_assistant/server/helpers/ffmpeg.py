@@ -14,9 +14,10 @@ from music_assistant.common.models.media_items import AudioFormat, ContentType
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 from .process import AsyncProcess
-from .util import close_async_generator
+from .util import TimedAsyncGenerator, close_async_generator
 
 LOGGER = logging.getLogger("ffmpeg")
+MINIMAL_FFMPEG_VERSION = 6
 
 
 class FFMpeg(AsyncProcess):
@@ -122,8 +123,10 @@ class FFMpeg(AsyncProcess):
         generator_exhausted = False
         audio_received = False
         try:
-            async for chunk in self.audio_input:
+            async for chunk in TimedAsyncGenerator(self.audio_input, 300):
                 audio_received = True
+                if self.proc and self.proc.returncode is not None:
+                    raise AudioError("Parent process already exited")
                 await self.write(chunk)
             generator_exhausted = True
             if not audio_received:
@@ -133,7 +136,7 @@ class FFMpeg(AsyncProcess):
                 return
             self.logger.error(
                 "Stream error: %s",
-                str(err),
+                str(err) or err.__class__.__name__,
                 exc_info=err if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
             )
         finally:
@@ -173,7 +176,7 @@ async def get_ffmpeg_stream(
             yield chunk
 
 
-def get_ffmpeg_args(
+def get_ffmpeg_args(  # noqa: PLR0915
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
@@ -197,6 +200,12 @@ def get_ffmpeg_args(
         )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
+    if major_version < MINIMAL_FFMPEG_VERSION:
+        msg = (
+            f"FFmpeg version {version} is not supported. "
+            f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
+        )
+        raise AudioError(msg)
 
     # generic args
     generic_args = [
@@ -216,19 +225,23 @@ def get_ffmpeg_args(
     if input_path.startswith("http"):
         # append reconnect options for direct stream from http
         input_args += [
+            # Reconnect automatically when disconnected before EOF is hit.
             "-reconnect",
             "1",
+            # Set the maximum delay in seconds after which to give up reconnecting.
+            "-reconnect_delay_max",
+            "30",
+            # If set then even streamed/non seekable streams will be reconnected on errors.
             "-reconnect_streamed",
             "1",
+            # Reconnect automatically in case of TCP/TLS errors during connect.
+            "-reconnect_on_network_error",
+            "1",
+            # A comma separated list of HTTP status codes to reconnect on.
+            # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
+            "-reconnect_on_http_error",
+            "5xx,4xx",
         ]
-        if major_version > 4:
-            # these options are only supported in ffmpeg > 5
-            input_args += [
-                "-reconnect_on_network_error",
-                "1",
-                "-reconnect_on_http_error",
-                "5xx,4xx",
-            ]
     if input_format.content_type.is_pcm():
         input_args += [
             "-ac",
@@ -272,7 +285,8 @@ def get_ffmpeg_args(
             str(output_format.channels),
         ]
         if output_format.output_format_str == "flac":
-            output_args += ["-compression_level", "6"]
+            # use level 0 compression for fastest encoding
+            output_args += ["-compression_level", "0"]
         output_args += [output_path]
 
     # edge case: source file is not stereo - downmix to stereo

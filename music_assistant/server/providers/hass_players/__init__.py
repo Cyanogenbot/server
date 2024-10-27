@@ -11,6 +11,8 @@ import time
 from enum import IntFlag
 from typing import TYPE_CHECKING, Any
 
+from hass_client.exceptions import FailedCommand
+
 from music_assistant.common.helpers.datetime import from_iso_string
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -183,6 +185,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
         # prefetch the device- and entity registry
         device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
@@ -222,9 +225,17 @@ class HomeAssistantPlayers(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-        await self.hass_prov.hass.call_service(
-            domain="media_player", service="media_stop", target={"entity_id": player_id}
-        )
+        try:
+            await self.hass_prov.hass.call_service(
+                domain="media_player", service="media_stop", target={"entity_id": player_id}
+            )
+        except FailedCommand as exc:
+            # some HA players do not support STOP
+            if "does not support this service" not in str(exc):
+                raise
+            if player := self.mass.players.get(player_id):
+                if PlayerFeature.PAUSE in player.supported_features:
+                    await self.cmd_pause(player_id)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
@@ -338,6 +349,7 @@ class HomeAssistantPlayers(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="join",
@@ -352,6 +364,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
             - player_id: player_id of the player to handle the command.
         """
+        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="unjoin",
@@ -366,29 +379,20 @@ class HomeAssistantPlayers(PlayerProvider):
     ) -> None:
         """Handle setup of a Player from an hass entity."""
         hass_device: HassDevice | None = None
-        platform_players: list[str] = []
         if entity_registry_entry := entity_registry.get(state["entity_id"]):
-            # collect all players from same platform
-            platform_players = [
-                entity_id
-                for entity_id, entity in entity_registry.items()
-                if entity["platform"] == entity_registry_entry["platform"]
-                and state["entity_id"].startswith("media_player")
-                and entity_id != state["entity_id"]
-            ]
             hass_device = device_registry.get(entity_registry_entry["device_id"])
         hass_supported_features = MediaPlayerEntityFeature(
             state["attributes"]["supported_features"]
         )
         supported_features: list[PlayerFeature] = []
-        if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
-            supported_features.append(PlayerFeature.SYNC)
         if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
             supported_features.append(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             supported_features.append(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
             supported_features.append(PlayerFeature.VOLUME_MUTE)
+        if MediaPlayerEntityFeature.MEDIA_ENQUEUE in hass_supported_features:
+            supported_features.append(PlayerFeature.ENQUEUE)
         if (
             MediaPlayerEntityFeature.TURN_ON in hass_supported_features
             and MediaPlayerEntityFeature.TURN_OFF in hass_supported_features
@@ -410,10 +414,8 @@ class HomeAssistantPlayers(PlayerProvider):
             supported_features=tuple(supported_features),
             state=StateMap.get(state["state"], PlayerState.IDLE),
         )
-        if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
-            player.can_sync_with = platform_players
         self._update_player_attributes(player, state["attributes"])
-        self.mass.players.register_or_update(player)
+        await self.mass.players.register_or_update(player)
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
